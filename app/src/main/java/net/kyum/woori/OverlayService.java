@@ -37,6 +37,9 @@ import java.util.Locale;
 /** 플로팅 버튼(Apple blue 원형) → 탭 시 입력 패널(통화·금액·K·tax) + 원화 결과. */
 public class OverlayService extends Service {
 
+    /** build.gradle의 versionName과 동기화 유지 */
+    static final String VERSION = "v1.2";
+
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final DecimalFormat nf = new DecimalFormat("#,##0");
@@ -269,11 +272,32 @@ public class OverlayService extends Service {
         amountIn.setSingleLine(true);
         amountIn.setBackground(pill(Theme.SURFACE, Theme.HAIRLINE, Theme.R_CONTROL));
         amountIn.setPadding(dp(14), dp(12), dp(14), dp(12));
-        amountIn.addTextChangedListener(watcher());
+        amountIn.addTextChangedListener(new TextWatcher() {
+            boolean self;
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            public void afterTextChanged(Editable e) {
+                if (self) return;
+                String digits = e.toString().replaceAll("[^0-9]", "");
+                if (digits.length() > 15) digits = digits.substring(0, 15);
+                String f = digits.isEmpty() ? "" : nf.format(Long.parseLong(digits));
+                if (!f.equals(e.toString())) {
+                    // watcher 제거 후 setText 방식 — afterTextChanged 내 e.replace는
+                    // 삼성 키보드와의 경합으로 되돌려질 수 있다
+                    removeOneself();
+                    amountIn.setText(f);
+                    addOneself();
+                    amountIn.setSelection(f.length());
+                }
+                recalc();
+            }
+            private void removeOneself() { amountIn.removeTextChangedListener(this); }
+            private void addOneself() { amountIn.addTextChangedListener(this); }
+        });
         arow.addView(weight(amountIn, 1));
         kBtn = mkText("K", 15, kOn ? Theme.ON_PRIMARY : Theme.LINK, Typeface.BOLD);
         kBtn.setGravity(Gravity.CENTER);
-        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_PILL));
+        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_CONTROL));
         kBtn.setPadding(dp(16), 0, dp(16), 0);
         LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(-2, dp(44));
         klp.leftMargin = dp(8);
@@ -281,7 +305,7 @@ public class OverlayService extends Service {
         kBtn.setOnClickListener(v -> {
             kOn = !kOn;
             kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.LINK);
-            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_PILL));
+            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_CONTROL));
             recalc();
         });
         arow.addView(kBtn);
@@ -301,7 +325,7 @@ public class OverlayService extends Service {
         taxIn.setTextSize(13);
         taxIn.setSingleLine(true);
         taxIn.setGravity(Gravity.CENTER);
-        taxIn.setBackground(pill(Theme.SURFACE, Theme.LINK, Theme.R_PILL));
+        taxIn.setBackground(pill(Theme.SURFACE, Theme.LINK, Theme.R_CONTROL));
         taxIn.addTextChangedListener(watcher());
         taxRow = row();
         taxRow.setPadding(0, dp(6), 0, 0);
@@ -341,18 +365,27 @@ public class OverlayService extends Service {
         }));
         card.addView(rrow);
 
-        // sponsor (web-home footer와 동일 문구)
+        // footer: sponsor (web-home footer와 동일 문구) + 버전명(우측)
+        LinearLayout frow = row();
+        frow.setPadding(0, dp(12), 0, 0);
         TextView sponsor = mkText("💗 Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-2, -2);
-        slp.topMargin = dp(12);
-        sponsor.setLayoutParams(slp);
+        frow.addView(weight(sponsor, 1));
         sponsor.setOnClickListener(v -> {
+            android.util.Log.i(Rates.TAG, "sponsor click");
             try {
-                startActivity(new Intent(Intent.ACTION_VIEW,
-                        Uri.parse("https://github.com/sponsors/sudo-redyell")));
-            } catch (Exception ignored) { }
+                Intent i = new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://github.com/sponsors/sudo-redyell"));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                android.util.Log.i(Rates.TAG, "sponsor startActivity ok");
+            } catch (Exception ex) {
+                android.util.Log.e(Rates.TAG, "sponsor startActivity fail", ex);
+            }
         });
-        card.addView(sponsor);
+        TextView ver = mkText(VERSION, 10, Theme.MUTED, 0);
+        ver.setPadding(dp(8), 0, 0, 0);
+        frow.addView(ver);
+        card.addView(frow);
 
         panel = sv;
     }
@@ -387,7 +420,7 @@ public class OverlayService extends Service {
         boolean sel = c[0].equals(cur);
         TextView t = mkText(c[2] + " " + c[1], 15,
                 sel ? Theme.ON_PRIMARY : Theme.LINK, sel ? Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_PILL));
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_CONTROL));
         t.setPadding(dp(Theme.S_CONTROL), dp(8), dp(Theme.S_CONTROL), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.rightMargin = dp(8);
@@ -409,7 +442,7 @@ public class OverlayService extends Service {
         boolean sel = Math.abs(tax - pct) < 0.0001;
         TextView t = mkText(pct + "%", 13, sel ? Theme.ON_PRIMARY : Theme.LINK,
                 sel ? Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_PILL));
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_CONTROL));
         t.setPadding(dp(13), dp(7), dp(13), dp(7));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.leftMargin = dp(8);
@@ -430,7 +463,7 @@ public class OverlayService extends Service {
     }
     private TextView compactBtn(String s, int bg, View.OnClickListener l) {
         TextView t = mkText(s, 12, Theme.ON_PRIMARY, Typeface.BOLD);
-        t.setBackground(pill(bg, 0, Theme.R_PILL));
+        t.setBackground(pill(bg, 0, Theme.R_CONTROL));
         t.setPadding(dp(Theme.S_COMPACT + 4), 0, dp(Theme.S_COMPACT + 4), 0);
         t.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(Theme.H_COMPACT));
