@@ -20,12 +20,12 @@ public final class Rates {
     public static final String TAG = "Woori";
     public static final String PREFS = "woori";
 
-    // code, symbol, emoji flag, 오프라인 예비값(X→KRW)
+    // code, symbol, emoji flag, 오프라인 예비값(X→KRW), 한국어 명칭
     public static final String[][] CURRENCIES = {
-        {"IDR", "Rp", "🇮🇩", "0.0738"},
-        {"USD", "$",  "🇺🇸", "1470"},
-        {"JPY", "¥",  "🇯🇵", "9.5"},
-        {"VND", "₫",  "🇻🇳", "0.0059"},
+        {"IDR", "Rp", "🇮🇩", "0.0738", "루피아"},
+        {"USD", "$",  "🇺🇸", "1470", "달러"},
+        {"JPY", "¥",  "🇯🇵", "9.5", "엔"},
+        {"VND", "₫",  "🇻🇳", "0.0059", "동"},
     };
 
     private static final String[] ENDPOINTS = {

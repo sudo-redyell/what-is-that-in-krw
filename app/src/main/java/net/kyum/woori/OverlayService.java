@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.3";
+    static final String VERSION = "v1.4";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -58,6 +58,7 @@ public class OverlayService extends Service {
     private EditText amountIn, taxIn;
     private TextView kBtn;
     private LinearLayout curRow, taxRow;
+    private HorizontalScrollView curHsv, taxHsv;
     private String cur = "IDR";
     private double tax = 0;
     private boolean kOn = false;
@@ -102,7 +103,7 @@ public class OverlayService extends Service {
         String ch = "woori";
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationManager nm = getSystemService(NotificationManager.class);
-            NotificationChannel c = new NotificationChannel(ch, "우리돈으로 얼마지?", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel c = new NotificationChannel(ch, "우리 돈으로 얼마지?", NotificationManager.IMPORTANCE_LOW);
             nm.createNotificationChannel(c);
         }
         Intent open = new Intent(this, MainActivity.class);
@@ -110,7 +111,7 @@ public class OverlayService extends Service {
                 Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
-        Notification n = b.setContentTitle("우리돈으로 얼마지?")
+        Notification n = b.setContentTitle("우리 돈으로 얼마지?")
                 .setContentText("플로팅 버튼 실행 중")
                 .setSmallIcon(android.R.drawable.ic_menu_sort_by_size)
                 .setContentIntent(pi).setOngoing(true).build();
@@ -251,8 +252,8 @@ public class OverlayService extends Service {
 
         // header: title / dark toggle / close
         LinearLayout head = row();
-        head.addView(weight(mkText("우리돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
-        darkBtn = mkText(Theme.dark ? "☀" : "☾", 18, Theme.FOREGROUND, 0);
+        head.addView(weight(mkText("우리 돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
+        darkBtn = mkText(Theme.dark ? "☀️" : "🌙", 15, Theme.FOREGROUND, 0);
         darkBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
         darkBtn.setOnClickListener(v -> {
             Theme.saveDark(this, !Theme.dark);
@@ -272,8 +273,9 @@ public class OverlayService extends Service {
         // currency pills: flag + symbol
         curRow = row();
         curRow.setPadding(0, dp(12), 0, dp(4));
-        for (String[] c : Rates.CURRENCIES) curRow.addView(curPill(c));
-        card.addView(wrapH(curRow));
+        for (int i = 0; i < Rates.CURRENCIES.length; i++) curRow.addView(curPill(Rates.CURRENCIES[i], i));
+        curHsv = wrapH(curRow);
+        card.addView(curHsv);
 
         // amount + K
         LinearLayout arow = row();
@@ -350,7 +352,8 @@ public class OverlayService extends Service {
         taxRow.setPadding(0, dp(6), 0, 0);
         taxRow.addView(fixed(taxIn, dp(76), dp(Theme.H_COMPACT), 0));
         for (int preset = 0; preset <= 25; preset += 5) taxRow.addView(taxPill(preset));
-        card.addView(wrapH(taxRow));
+        taxHsv = wrapH(taxRow);
+        card.addView(taxHsv);
 
         // result card
         LinearLayout res = new LinearLayout(this);
@@ -379,7 +382,7 @@ public class OverlayService extends Service {
             toast("환율 갱신 중…");
         }));
         rrow.addView(compactBtn("■ 앱 종료", Theme.DANGER, v -> {
-            toast("우리돈으로 얼마지? 종료");
+            toast("우리 돈으로 얼마지? 종료");
             stopSelf();
         }));
         card.addView(rrow);
@@ -387,7 +390,7 @@ public class OverlayService extends Service {
         // footer: sponsor (web-home footer와 동일 문구) + 버전명(우측)
         LinearLayout frow = row();
         frow.setPadding(0, dp(12), 0, 0);
-        TextView sponsor = mkText("♡ Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
+        TextView sponsor = mkText("💗 Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
         frow.addView(weight(sponsor, 1));
         sponsor.setOnClickListener(v -> {
             android.util.Log.i(Rates.TAG, "sponsor click");
@@ -430,19 +433,34 @@ public class OverlayService extends Service {
         return v;
     }
     private HorizontalScrollView wrapH(LinearLayout inner) {
-        HorizontalScrollView hsv = new HorizontalScrollView(this);
-        hsv.setHorizontalScrollBarEnabled(false);
-        hsv.addView(inner);
-        // 우측 페이드: 잘린 버튼(계속됨) 암시 — 나머지 폭은 캔버스색이라 무해
-        GradientDrawable fade = new GradientDrawable();
+        // 우측 페이드: 잘린 버튼(계속됨) 암시. 끝까지 스크롤됐거나 넘침 없으면 숨김
+        // (선택된 마지막 칩이 페이드에 가려 옅어지는 버그 방지)
+        final GradientDrawable fade = new GradientDrawable();
         fade.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
         fade.setColors(new int[]{0, 0, Theme.CANVAS}, new float[]{0f, 0.88f, 1f});
-        hsv.setForeground(fade);
+        HorizontalScrollView hsv = new HorizontalScrollView(this) {
+            void fadeHint() {
+                View child = getChildAt(0);
+                boolean overflow = child != null && child.getWidth() > getWidth();
+                boolean atEnd = child == null || getScrollX() + getWidth() >= child.getWidth() - dp(6);
+                setForeground(overflow && !atEnd ? fade : null);
+            }
+            @Override protected void onScrollChanged(int l, int t, int ol, int ot) {
+                super.onScrollChanged(l, t, ol, ot);
+                fadeHint();
+            }
+            @Override protected void onLayout(boolean c, int l, int t, int r, int b) {
+                super.onLayout(c, l, t, r, b);
+                fadeHint();
+            }
+        };
+        hsv.setHorizontalScrollBarEnabled(false);
+        hsv.addView(inner);
         return hsv;
     }
-    private TextView curPill(String[] c) {
+    private TextView curPill(String[] c, final int idx) {
         boolean sel = c[0].equals(cur);
-        TextView t = mkText(c[2] + " " + c[1], 15,
+        TextView t = mkText(c[2] + " " + c[4], 15,
                 sel ? Theme.ON_PRIMARY : Theme.FOREGROUND, sel ? Typeface.BOLD : 0);
         t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
         t.setPadding(dp(Theme.S_CONTROL), dp(8), dp(Theme.S_CONTROL), dp(8));
@@ -455,12 +473,13 @@ public class OverlayService extends Service {
             rebuildCurRow();
             updateRateInfo();
             recalc();
+            curRow.post(() -> reveal(curHsv, idx < curRow.getChildCount() ? curRow.getChildAt(idx) : null));
         });
         return t;
     }
     private void rebuildCurRow() {
         curRow.removeAllViews();
-        for (String[] c : Rates.CURRENCIES) curRow.addView(curPill(c));
+        for (int i = 0; i < Rates.CURRENCIES.length; i++) curRow.addView(curPill(Rates.CURRENCIES[i], i));
     }
     private TextView taxPill(int pct) {
         boolean sel = Math.abs(tax - pct) < 0.0001;
@@ -476,8 +495,22 @@ public class OverlayService extends Service {
             if (taxIn != null) taxIn.setText("");
             rebuildTaxRow();
             recalc();
+            final int idx = pct / 5 + 1; // 0: 직접 입력칸
+            taxRow.post(() -> reveal(taxHsv, idx < taxRow.getChildCount() ? taxRow.getChildAt(idx) : null));
         });
         return t;
+    }
+    /** 선택 칩이 가운데 보이도록 가로 스크롤 — 잘린 칩 선택 시 페이드에 가려지는 문제 방지 */
+    private void reveal(HorizontalScrollView hsv, View chip) {
+        if (hsv == null || chip == null || hsv.getWidth() == 0) return;
+        int l = chip.getLeft(), r = chip.getRight();
+        View p = (View) chip.getParent();
+        while (p != null && p != hsv) {
+            l += p.getLeft(); r += p.getRight();
+            p = (p.getParent() instanceof View) ? (View) p.getParent() : null;
+        }
+        int max = Math.max(0, hsv.getChildAt(0).getWidth() - hsv.getWidth());
+        hsv.smoothScrollTo(Math.max(0, Math.min(max, (l + r) / 2 - hsv.getWidth() / 2)), 0);
     }
     private void rebuildTaxRow() {
         taxRow.removeAllViews();
@@ -524,7 +557,7 @@ public class OverlayService extends Service {
         saveSession();
         if (resultBig != null) {
             resultBig.setText("₩" + nf.format(total));
-            String sym = symOf(cur), flag = flagOf(cur);
+            String sym = nameOf(cur), flag = flagOf(cur);
             String r = fmtRate(rate);
             StringBuilder cap = new StringBuilder();
             if (amt > 0) {
@@ -539,6 +572,7 @@ public class OverlayService extends Service {
         updateBubble();
     }
 
+    private String nameOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[4]; return c; }
     private String symOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[1]; return c; }
     private String flagOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[2]; return c; }
 
