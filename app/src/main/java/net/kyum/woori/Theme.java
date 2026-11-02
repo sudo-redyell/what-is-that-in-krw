@@ -37,7 +37,7 @@ public final class Theme {
         if (dark) {
             PRIMARY = 0xFF0A84FF; LINK = 0xFF2997FF;
             CANVAS = 0xFF1C1C1E; SURFACE = 0xFF2C2C2E;
-            FOREGROUND = 0xFFF5F5F7; MUTED = 0xFF98989D; HAIRLINE = 0xFF3A3A3C;
+            FOREGROUND = 0xFFF5F5F7; MUTED = 0xFF98989D; HAIRLINE = 0xFF545456;
         } else {
             PRIMARY = 0xFF0071E3; LINK = 0xFF0066CC;
             CANVAS = 0xFFF5F5F7; SURFACE = 0xFFFFFFFF;

@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.2";
+    static final String VERSION = "v1.3";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -194,6 +194,16 @@ public class OverlayService extends Service {
         bubbleText.setText(s);
     }
 
+    // ── session persistence (마지막 세션 기억) ────────────────
+    private void saveSession() {
+        String digits = amountIn == null ? "" : amountIn.getText().toString().replaceAll("[^0-9]", "");
+        getSharedPreferences(Rates.PREFS, 0).edit()
+                .putString("amount", digits)
+                .putString("tax", String.valueOf(tax))
+                .putBoolean("kOn", kOn)
+                .apply();
+    }
+
     // ── panel ──────────────────────────────────────────────────
     private void togglePanel() { if (panelOpen) closePanel(); else openPanel(); }
 
@@ -226,6 +236,11 @@ public class OverlayService extends Service {
     private void buildPanel() {
         if (panel != null) closePanel();
         Theme.load(this);
+        // restore last session
+        String amt0 = getSharedPreferences(Rates.PREFS, 0).getString("amount", "");
+        kOn = getSharedPreferences(Rates.PREFS, 0).getBoolean("kOn", false);
+        try { tax = Double.parseDouble(getSharedPreferences(Rates.PREFS, 0).getString("tax", "0")); }
+        catch (Exception e) { tax = 0; }
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
         LinearLayout card = new LinearLayout(this);
@@ -237,7 +252,7 @@ public class OverlayService extends Service {
         // header: title / dark toggle / close
         LinearLayout head = row();
         head.addView(weight(mkText("우리돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
-        darkBtn = mkText(Theme.dark ? "☀️" : "🌙", 15, Theme.FOREGROUND, 0);
+        darkBtn = mkText(Theme.dark ? "☀" : "☾", 18, Theme.FOREGROUND, 0);
         darkBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
         darkBtn.setOnClickListener(v -> {
             Theme.saveDark(this, !Theme.dark);
@@ -289,23 +304,27 @@ public class OverlayService extends Service {
                     addOneself();
                     amountIn.setSelection(f.length());
                 }
+                try { amountIn.setSelection(f.length()); } catch (Exception ignored) { }
                 recalc();
             }
             private void removeOneself() { amountIn.removeTextChangedListener(this); }
             private void addOneself() { amountIn.addTextChangedListener(this); }
         });
+        if (!amt0.isEmpty()) {
+            try { amountIn.setText(nf.format(Long.parseLong(amt0))); } catch (Exception ignored) { }
+        }
         arow.addView(weight(amountIn, 1));
-        kBtn = mkText("K", 15, kOn ? Theme.ON_PRIMARY : Theme.LINK, Typeface.BOLD);
+        kBtn = mkText("K", 15, kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND, Typeface.BOLD);
         kBtn.setGravity(Gravity.CENTER);
-        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_CONTROL));
+        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
         kBtn.setPadding(dp(16), 0, dp(16), 0);
         LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(-2, dp(44));
         klp.leftMargin = dp(8);
         kBtn.setLayoutParams(klp);
         kBtn.setOnClickListener(v -> {
             kOn = !kOn;
-            kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.LINK);
-            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_CONTROL));
+            kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
+            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
             recalc();
         });
         arow.addView(kBtn);
@@ -325,7 +344,7 @@ public class OverlayService extends Service {
         taxIn.setTextSize(13);
         taxIn.setSingleLine(true);
         taxIn.setGravity(Gravity.CENTER);
-        taxIn.setBackground(pill(Theme.SURFACE, Theme.LINK, Theme.R_CONTROL));
+        taxIn.setBackground(pill(Theme.SURFACE, Theme.HAIRLINE, Theme.R_CONTROL));
         taxIn.addTextChangedListener(watcher());
         taxRow = row();
         taxRow.setPadding(0, dp(6), 0, 0);
@@ -368,7 +387,7 @@ public class OverlayService extends Service {
         // footer: sponsor (web-home footer와 동일 문구) + 버전명(우측)
         LinearLayout frow = row();
         frow.setPadding(0, dp(12), 0, 0);
-        TextView sponsor = mkText("💗 Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
+        TextView sponsor = mkText("♡ Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
         frow.addView(weight(sponsor, 1));
         sponsor.setOnClickListener(v -> {
             android.util.Log.i(Rates.TAG, "sponsor click");
@@ -414,13 +433,18 @@ public class OverlayService extends Service {
         HorizontalScrollView hsv = new HorizontalScrollView(this);
         hsv.setHorizontalScrollBarEnabled(false);
         hsv.addView(inner);
+        // 우측 페이드: 잘린 버튼(계속됨) 암시 — 나머지 폭은 캔버스색이라 무해
+        GradientDrawable fade = new GradientDrawable();
+        fade.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
+        fade.setColors(new int[]{0, 0, Theme.CANVAS}, new float[]{0f, 0.88f, 1f});
+        hsv.setForeground(fade);
         return hsv;
     }
     private TextView curPill(String[] c) {
         boolean sel = c[0].equals(cur);
         TextView t = mkText(c[2] + " " + c[1], 15,
-                sel ? Theme.ON_PRIMARY : Theme.LINK, sel ? Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_CONTROL));
+                sel ? Theme.ON_PRIMARY : Theme.FOREGROUND, sel ? Typeface.BOLD : 0);
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
         t.setPadding(dp(Theme.S_CONTROL), dp(8), dp(Theme.S_CONTROL), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.rightMargin = dp(8);
@@ -440,9 +464,9 @@ public class OverlayService extends Service {
     }
     private TextView taxPill(int pct) {
         boolean sel = Math.abs(tax - pct) < 0.0001;
-        TextView t = mkText(pct + "%", 13, sel ? Theme.ON_PRIMARY : Theme.LINK,
+        TextView t = mkText(pct + "%", 13, sel ? Theme.ON_PRIMARY : Theme.FOREGROUND,
                 sel ? Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_CONTROL));
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
         t.setPadding(dp(13), dp(7), dp(13), dp(7));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.leftMargin = dp(8);
@@ -497,6 +521,7 @@ public class OverlayService extends Service {
         double rate = Rates.rate(this, cur);
         long total = Math.round(amt * rate * (1 + tax / 100.0));
         lastTotal = amt > 0 ? total : -1;
+        saveSession();
         if (resultBig != null) {
             resultBig.setText("₩" + nf.format(total));
             String sym = symOf(cur), flag = flagOf(cur);
