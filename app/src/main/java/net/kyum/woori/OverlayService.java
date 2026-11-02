@@ -6,9 +6,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
-import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -20,9 +21,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -35,27 +34,30 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** 플로팅 버튼(Apple blue 원형) → 탭 시 입력 패널(통화·금액·tax) + 원화 결과. */
+/** 플로팅 버튼(Apple blue 원형) → 탭 시 입력 패널(통화·금액·K·tax) + 원화 결과. */
 public class OverlayService extends Service {
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final DecimalFormat nf = new DecimalFormat("#,##0");
     private WindowManager wm;
-    private float d; // density
+    private float d;
 
     private View bubble;
     private WindowManager.LayoutParams bubbleLp;
+    private GradientDrawable bubbleBg;
+    private TextView bubbleText;
     private View panel;
     private WindowManager.LayoutParams panelLp;
     private boolean panelOpen;
 
-    private TextView bubbleText;
-    private TextView resultBig, resultCap, rateInfo;
-    private EditText amountIn, taxIn, manualIn;
+    private TextView resultBig, resultCap, rateInfo, darkBtn;
+    private EditText amountIn, taxIn;
+    private TextView kBtn;
     private LinearLayout curRow, taxRow;
     private String cur = "IDR";
     private double tax = 0;
+    private boolean kOn = false;
     private long lastTotal = -1;
 
     @Override public void onCreate() {
@@ -63,19 +65,34 @@ public class OverlayService extends Service {
         inst = this;
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         d = getResources().getDisplayMetrics().density;
+        Theme.load(this);
         cur = Rates.cur(this);
         startFore();
         makeBubble();
-        Rates.refreshIfStale(this, () -> { recalc(); if (panelOpen) updateRateInfo(); });
+        Rates.refresh(this, refreshUi);   // 앱 시작 시 갱신
+        ui.postDelayed(hourTick, msToNextHour()); // 매 정각 갱신
     }
 
     @Override public int onStartCommand(Intent i, int f, int s) { return START_STICKY; }
     @Override public IBinder onBind(Intent i) { return null; }
     @Override public void onDestroy() {
+        ui.removeCallbacks(hourTick);
         if (bubble != null) wm.removeView(bubble);
         closePanel();
         inst = null;
     }
+
+    private final Runnable hourTick = new Runnable() {
+        @Override public void run() {
+            Rates.refresh(OverlayService.this, refreshUi);
+            ui.postDelayed(this, msToNextHour());
+        }
+    };
+    private long msToNextHour() {
+        long now = System.currentTimeMillis();
+        return 3600_000L - (now % 3600_000L) + 1500;
+    }
+    private final Runnable refreshUi = () -> { recalc(); if (panelOpen) updateRateInfo(); };
 
     // ── foreground notification ────────────────────────────────
     private void startFore() {
@@ -119,21 +136,19 @@ public class OverlayService extends Service {
 
     // ── bubble ─────────────────────────────────────────────────
     private void makeBubble() {
-        bubbleText = mkText("₩", 20, Theme.SURFACE, android.graphics.Typeface.BOLD);
+        bubbleText = mkText("₩", 20, Theme.ON_PRIMARY, Typeface.BOLD);
         bubbleText.setGravity(Gravity.CENTER);
         int size = dp(56);
-        GradientDrawable circle = new GradientDrawable();
-        circle.setColor(Theme.PRIMARY);
-        circle.setCornerRadius(size);
-        bubbleText.setBackground(circle);
+        bubbleBg = new GradientDrawable();
+        bubbleBg.setColor(Theme.PRIMARY);
+        bubbleBg.setCornerRadius(size);
+        bubbleText.setBackground(bubbleBg);
         bubble = bubbleText;
 
         int screenH = getResources().getDisplayMetrics().heightPixels;
         int screenW = getResources().getDisplayMetrics().widthPixels;
         bubbleLp = new WindowManager.LayoutParams(size, size,
-                overlayType(),
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT);
+                overlayType(), WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
         bubbleLp.gravity = Gravity.TOP | Gravity.START;
         bubbleLp.x = screenW - size - dp(8);
         bubbleLp.y = screenH / 3;
@@ -169,6 +184,7 @@ public class OverlayService extends Service {
     }
 
     private void updateBubble() {
+        bubbleBg.setColor(Theme.PRIMARY);
         String s = lastTotal >= 0 ? "₩" + nf.format(lastTotal) : "₩";
         float sp = s.length() <= 2 ? 20 : s.length() <= 6 ? 15 : s.length() <= 8 ? 12 : 10;
         bubbleText.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
@@ -176,9 +192,7 @@ public class OverlayService extends Service {
     }
 
     // ── panel ──────────────────────────────────────────────────
-    private void togglePanel() {
-        if (panelOpen) closePanel(); else openPanel();
-    }
+    private void togglePanel() { if (panelOpen) closePanel(); else openPanel(); }
 
     private void closePanel() {
         if (panel != null) { try { wm.removeView(panel); } catch (Exception ignored) { } panel = null; }
@@ -187,11 +201,10 @@ public class OverlayService extends Service {
 
     private void openPanel() {
         buildPanel();
-        int w = Math.min(dp(340), getResources().getDisplayMetrics().widthPixels - dp(24));
+        int w = Math.min(dp(360), getResources().getDisplayMetrics().widthPixels - dp(24));
         panelLp = new WindowManager.LayoutParams(w, WindowManager.LayoutParams.WRAP_CONTENT,
                 overlayType(),
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT);
         panelLp.gravity = Gravity.TOP | Gravity.START;
         panelLp.x = Math.max(dp(12), Math.min(bubbleLp.x - w + dp(56),
@@ -207,37 +220,46 @@ public class OverlayService extends Service {
         recalc();
     }
 
-    private LinearLayout card;
-
     private void buildPanel() {
         if (panel != null) closePanel();
+        Theme.load(this);
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
-        GradientDrawable cardBg = pill(Theme.CANVAS, 0, Theme.R_CARD);
-        card = new LinearLayout(this);
+        LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(Theme.S_CONTENT), dp(Theme.S_CONTENT), dp(Theme.S_CONTENT), dp(Theme.S_CONTENT));
-        card.setBackground(cardBg);
+        card.setBackground(pill(Theme.CANVAS, 0, Theme.R_CARD));
         sv.addView(card);
 
-        // header
+        // header: title / dark toggle / close
         LinearLayout head = row();
-        head.addView(weight(mkText("우리돈으로 얼마지?", 17, Theme.FOREGROUND, android.graphics.Typeface.BOLD), 1));
+        head.addView(weight(mkText("우리돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
+        darkBtn = mkText(Theme.dark ? "☀️" : "🌙", 15, Theme.FOREGROUND, 0);
+        darkBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
+        darkBtn.setOnClickListener(v -> {
+            Theme.saveDark(this, !Theme.dark);
+            Theme.load(this);
+            updateBubble();
+            boolean was = panelOpen;
+            closePanel();
+            if (was) openPanel();
+        });
+        head.addView(darkBtn);
         TextView close = mkText("✕", 16, Theme.MUTED, 0);
         close.setPadding(dp(12), dp(4), dp(4), dp(4));
         close.setOnClickListener(v -> closePanel());
         head.addView(close);
         card.addView(head);
 
-        // currency pills
+        // currency pills: flag + symbol
         curRow = row();
         curRow.setPadding(0, dp(12), 0, dp(4));
-        for (String[] c : Rates.CURRENCIES) {
-            curRow.addView(curPill(c));
-        }
+        for (String[] c : Rates.CURRENCIES) curRow.addView(curPill(c));
         card.addView(wrapH(curRow));
 
-        // amount input
+        // amount + K
+        LinearLayout arow = row();
+        arow.setPadding(0, dp(8), 0, 0);
         amountIn = new EditText(this);
         amountIn.setHint("금액 입력 (예: 100.000)");
         amountIn.setHintTextColor(Theme.MUTED);
@@ -248,18 +270,29 @@ public class OverlayService extends Service {
         amountIn.setBackground(pill(Theme.SURFACE, Theme.HAIRLINE, Theme.R_CONTROL));
         amountIn.setPadding(dp(14), dp(12), dp(14), dp(12));
         amountIn.addTextChangedListener(watcher());
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(-1, -2);
-        alp.topMargin = dp(8);
-        card.addView(amountIn, alp);
+        arow.addView(weight(amountIn, 1));
+        kBtn = mkText("K", 15, kOn ? Theme.ON_PRIMARY : Theme.LINK, Typeface.BOLD);
+        kBtn.setGravity(Gravity.CENTER);
+        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_PILL));
+        kBtn.setPadding(dp(16), 0, dp(16), 0);
+        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(-2, dp(44));
+        klp.leftMargin = dp(8);
+        kBtn.setLayoutParams(klp);
+        kBtn.setOnClickListener(v -> {
+            kOn = !kOn;
+            kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.LINK);
+            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.LINK, Theme.R_PILL));
+            recalc();
+        });
+        arow.addView(kBtn);
+        card.addView(arow);
 
-        // tax label + pills + custom
+        // tax row (single line): custom input first, then presets
         TextView taxLbl = mkText("세금 / 가산세 (%)", 12, Theme.MUTED, 0);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-2, -2);
         tlp.topMargin = dp(14);
         card.addView(taxLbl, tlp);
-        taxRow = row();
-        taxRow.setPadding(0, dp(6), 0, 0);
-        for (int preset = 0; preset <= 25; preset += 5) taxRow.addView(taxPill(preset));
+
         taxIn = new EditText(this);
         taxIn.setHint("직접");
         taxIn.setHintTextColor(Theme.MUTED);
@@ -267,16 +300,14 @@ public class OverlayService extends Service {
         taxIn.setTextColor(Theme.FOREGROUND);
         taxIn.setTextSize(13);
         taxIn.setSingleLine(true);
-        taxIn.setEms(4);
-        taxIn.setHint(" tax%");
-        taxIn.setBackground(pill(Theme.SURFACE, Theme.HAIRLINE, Theme.R_PILL));
-        taxIn.setPadding(dp(12), 0, dp(12), 0);
+        taxIn.setGravity(Gravity.CENTER);
+        taxIn.setBackground(pill(Theme.SURFACE, Theme.LINK, Theme.R_PILL));
         taxIn.addTextChangedListener(watcher());
-        LinearLayout taxRow2 = row();
-        taxRow2.setPadding(0, dp(6), 0, 0);
-        taxRow2.addView(taxIn, new LinearLayout.LayoutParams(dp(84), dp(Theme.H_COMPACT)));
+        taxRow = row();
+        taxRow.setPadding(0, dp(6), 0, 0);
+        taxRow.addView(fixed(taxIn, dp(76), dp(Theme.H_COMPACT), 0));
+        for (int preset = 0; preset <= 25; preset += 5) taxRow.addView(taxPill(preset));
         card.addView(wrapH(taxRow));
-        card.addView(taxRow2);
 
         // result card
         LinearLayout res = new LinearLayout(this);
@@ -285,53 +316,48 @@ public class OverlayService extends Service {
         res.setPadding(dp(Theme.S_CONTENT), dp(16), dp(Theme.S_CONTENT), dp(16));
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(-1, -2);
         rlp.topMargin = dp(14);
-        resultBig = mkText("₩0", 32, Theme.FOREGROUND, android.graphics.Typeface.BOLD);
+        resultBig = mkText("₩0", 32, Theme.FOREGROUND, Typeface.BOLD);
         resultCap = mkText("", 12, Theme.MUTED, 0);
         res.addView(resultBig);
         res.addView(resultCap);
         card.addView(res, rlp);
 
-        // rate row
+        // rate info
         rateInfo = mkText("", 12, Theme.MUTED, 0);
         LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(-1, -2);
         ilp.topMargin = dp(14);
         card.addView(rateInfo, ilp);
 
+        // buttons: refresh now / exit(red)
         LinearLayout rrow = row();
         rrow.setPadding(0, dp(8), 0, 0);
-        rrow.addView(compactBtn("↻ 자동 갱신", v -> {
-            Rates.refresh(this, () -> { recalc(); updateRateInfo(); });
+        rrow.addView(compactBtn("↻ 지금 갱신", Theme.PRIMARY, v -> {
+            Rates.refresh(this, refreshUi);
             toast("환율 갱신 중…");
         }));
-        rrow.addView(compactBtn("수동 해제", v -> {
-            Rates.clearManual(this, cur); updateRateInfo(); recalc();
-        }));
-        manualIn = new EditText(this);
-        manualIn.setHint("1 " + cur + " = ₩");
-        manualIn.setHintTextColor(Theme.MUTED);
-        manualIn.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        manualIn.setTextColor(Theme.FOREGROUND);
-        manualIn.setTextSize(12);
-        manualIn.setSingleLine(true);
-        manualIn.setBackground(pill(Theme.SURFACE, Theme.HAIRLINE, Theme.R_PILL));
-        manualIn.setPadding(dp(12), 0, dp(12), 0);
-        rrow.addView(fixed(manualIn, dp(130), dp(Theme.H_COMPACT), dp(8)));
-        rrow.addView(compactBtn("저장", v -> {
-            double v2 = parseNum(manualIn.getText().toString());
-            if (v2 > 0) { Rates.setManualRate(this, cur, v2); updateRateInfo(); recalc(); }
+        rrow.addView(compactBtn("■ 앱 종료", Theme.DANGER, v -> {
+            toast("우리돈으로 얼마지? 종료");
+            stopSelf();
         }));
         card.addView(rrow);
 
-        CheckBox autoCb = new CheckBox(this);
-        autoCb.setText("자동 환율 (6시간)");
-        autoCb.setTextColor(Theme.MUTED);
-        autoCb.setTextSize(12);
-        autoCb.setChecked(Rates.autoOn(this));
-        autoCb.setOnCheckedChangeListener((v, on) -> Rates.setAuto(this, on));
-        card.addView(autoCb);
+        // sponsor (web-home footer와 동일 문구)
+        TextView sponsor = mkText("💗 Become a sponsor to sudo-redyell", 12, Theme.LINK, 0);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-2, -2);
+        slp.topMargin = dp(12);
+        sponsor.setLayoutParams(slp);
+        sponsor.setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://github.com/sponsors/sudo-redyell")));
+            } catch (Exception ignored) { }
+        });
+        card.addView(sponsor);
 
         panel = sv;
     }
+
+    private int Color0() { return 0; } // transparent fill marker for pill()
 
     // ── small widgets ──────────────────────────────────────────
     private LinearLayout row() {
@@ -359,9 +385,9 @@ public class OverlayService extends Service {
     }
     private TextView curPill(String[] c) {
         boolean sel = c[0].equals(cur);
-        TextView t = mkText(c[1] + " " + c[2], 13,
-                sel ? Theme.ON_PRIMARY : Theme.LINK, sel ? android.graphics.Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : Color.TRANSPARENT, sel ? 0 : Theme.LINK, Theme.R_PILL));
+        TextView t = mkText(c[2] + " " + c[1], 15,
+                sel ? Theme.ON_PRIMARY : Theme.LINK, sel ? Typeface.BOLD : 0);
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_PILL));
         t.setPadding(dp(Theme.S_CONTROL), dp(8), dp(Theme.S_CONTROL), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.rightMargin = dp(8);
@@ -370,7 +396,6 @@ public class OverlayService extends Service {
             cur = c[0];
             Rates.setCur(this, cur);
             rebuildCurRow();
-            manualIn.setHint("1 " + cur + " = ₩");
             updateRateInfo();
             recalc();
         });
@@ -383,16 +408,15 @@ public class OverlayService extends Service {
     private TextView taxPill(int pct) {
         boolean sel = Math.abs(tax - pct) < 0.0001;
         TextView t = mkText(pct + "%", 13, sel ? Theme.ON_PRIMARY : Theme.LINK,
-                sel ? android.graphics.Typeface.BOLD : 0);
-        t.setTag(pct);
-        t.setBackground(pill(sel ? Theme.PRIMARY : Color.TRANSPARENT, sel ? 0 : Theme.LINK, Theme.R_PILL));
+                sel ? Typeface.BOLD : 0);
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.LINK, Theme.R_PILL));
         t.setPadding(dp(13), dp(7), dp(13), dp(7));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.rightMargin = dp(8);
+        lp.leftMargin = dp(8);
         t.setLayoutParams(lp);
         t.setOnClickListener(v -> {
             tax = pct;
-            taxIn.setText("");
+            if (taxIn != null) taxIn.setText("");
             rebuildTaxRow();
             recalc();
         });
@@ -400,11 +424,13 @@ public class OverlayService extends Service {
     }
     private void rebuildTaxRow() {
         taxRow.removeAllViews();
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(76), dp(Theme.H_COMPACT));
+        taxRow.addView(fixed(taxIn, dp(76), dp(Theme.H_COMPACT), 0));
         for (int preset = 0; preset <= 25; preset += 5) taxRow.addView(taxPill(preset));
     }
-    private TextView compactBtn(String s, View.OnClickListener l) {
-        TextView t = mkText(s, 12, Theme.ON_PRIMARY, android.graphics.Typeface.BOLD);
-        t.setBackground(pill(Theme.PRIMARY, 0, Theme.R_PILL));
+    private TextView compactBtn(String s, int bg, View.OnClickListener l) {
+        TextView t = mkText(s, 12, Theme.ON_PRIMARY, Typeface.BOLD);
+        t.setBackground(pill(bg, 0, Theme.R_PILL));
         t.setPadding(dp(Theme.S_COMPACT + 4), 0, dp(Theme.S_COMPACT + 4), 0);
         t.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(Theme.H_COMPACT));
@@ -427,30 +453,36 @@ public class OverlayService extends Service {
         double t = parseNum(taxIn.getText().toString());
         if (t > 0 && Math.abs(t - tax) > 0.0001) {
             tax = t;
-            rebuildTaxRow(); // deselect presets when custom typed
+            rebuildTaxRow();
         }
         recalc();
     }
 
     private void recalc() {
         double amt = parseNum(amountIn != null ? amountIn.getText().toString() : "");
+        if (kOn) amt *= 1000;
         double rate = Rates.rate(this, cur);
-        double base = amt * rate;
-        long total = Math.round(base * (1 + tax / 100.0));
+        long total = Math.round(amt * rate * (1 + tax / 100.0));
         lastTotal = amt > 0 ? total : -1;
         if (resultBig != null) {
             resultBig.setText("₩" + nf.format(total));
-            String sym = symOf(cur), name = nameOf(cur);
+            String sym = symOf(cur), flag = flagOf(cur);
             String r = fmtRate(rate);
-            resultCap.setText(amt > 0
-                    ? nf.format(amt) + " " + sym + " " + name + " × " + r + (tax > 0 ? "  ·  +" + trim(tax) + "%" : "")
-                    : sym + " " + name + " · 환율 " + r);
+            StringBuilder cap = new StringBuilder();
+            if (amt > 0) {
+                cap.append(nf.format(amt)).append(" ").append(sym).append(kOn ? " (K×1,000)" : "");
+                cap.append(" × ").append(r);
+                if (tax > 0) cap.append("  ·  +").append(trim(tax)).append("%");
+            } else {
+                cap.append(flag).append(" ").append(sym).append(" · 환율 ").append(r);
+            }
+            resultCap.setText(cap);
         }
         updateBubble();
     }
 
     private String symOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[1]; return c; }
-    private String nameOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[2]; return c; }
+    private String flagOf(String c) { for (String[] r : Rates.CURRENCIES) if (r[0].equals(c)) return r[2]; return c; }
 
     private String fmtRate(double r) {
         if (r >= 100) return nf.format(Math.round(r));
@@ -474,8 +506,7 @@ public class OverlayService extends Service {
         if (rateInfo == null) return;
         double r = Rates.rate(this, cur);
         long at = Rates.rateAt(this, cur);
-        String when = at > 0 ? new SimpleDateFormat("MM-dd HH:mm", Locale.KOREA).format(new Date(at)) : "예비값";
-        rateInfo.setText((Rates.isManual(this, cur) ? "수동 지정 · " : "자동 · ")
-                + "1 " + cur + " = ₩" + fmtRate(r) + " (" + when + ")");
+        String when = at > 0 ? new SimpleDateFormat("HH:mm", Locale.KOREA).format(new Date(at)) : "예비값";
+        rateInfo.setText("자동(매시 정각) · 1 " + cur + " = ₩" + fmtRate(r) + " (" + when + ")");
     }
 }
