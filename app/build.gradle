@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'net.kyum.woori'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "net.kyum.woori"
+        minSdk 26
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../debug.keystore")
+            storePassword "rpkrw123"
+            keyAlias "rpkrw"
+            keyPassword "rpkrw123"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        lint { checkReleaseBuilds false }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
