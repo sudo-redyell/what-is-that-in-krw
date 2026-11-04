@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.4";
+    static final String VERSION = "v1.5";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -59,6 +59,8 @@ public class OverlayService extends Service {
     private TextView kBtn;
     private LinearLayout curRow, taxRow;
     private HorizontalScrollView curHsv, taxHsv;
+    private int transp = 0; // 투명도 0~100 (10 단위)
+    private View zoneTop, zoneBot;
     private String cur = "IDR";
     private double tax = 0;
     private boolean kOn = false;
@@ -81,6 +83,7 @@ public class OverlayService extends Service {
     @Override public IBinder onBind(Intent i) { return null; }
     @Override public void onDestroy() {
         ui.removeCallbacks(hourTick);
+        hideExitZones();
         if (bubble != null) wm.removeView(bubble);
         closePanel();
         inst = null;
@@ -167,11 +170,26 @@ public class OverlayService extends Service {
                     case MotionEvent.ACTION_MOVE:
                         bubbleLp.x = (int) (e.getRawX() - dx0);
                         bubbleLp.y = (int) (e.getRawY() - dy0);
-                        if (Math.abs(e.getRawX() - sx) > dp(6) || Math.abs(e.getRawY() - sy) > dp(6)) moved = true;
+                        if (!moved && (Math.abs(e.getRawX() - sx) > dp(6) || Math.abs(e.getRawY() - sy) > dp(6))) {
+                            moved = true;
+                            showExitZones(); // 드래그 시작 시 상/하단 종료 존 표시
+                        }
+                        if (moved) highlightZones(bubbleLp.y + dp(28));
                         wm.updateViewLayout(bubble, bubbleLp);
                         return true;
                     case MotionEvent.ACTION_UP:
-                        if (!moved) togglePanel();
+                        if (!moved) {
+                            togglePanel();
+                        } else {
+                            int cy = bubbleLp.y + dp(28);
+                            int screenH = getResources().getDisplayMetrics().heightPixels;
+                            boolean hit = cy < dp(96) || cy > screenH - dp(96);
+                            hideExitZones();
+                            if (hit) {
+                                toast("플로팅 버튼을 종료 존에 놓아 종료합니다");
+                                stopSelf();
+                            }
+                        }
                         return true;
                 }
                 return false;
@@ -179,6 +197,52 @@ public class OverlayService extends Service {
         });
         wm.addView(bubble, bubbleLp);
         updateBubble();
+    }
+
+    private float panelAlpha() { return 1f - transp * 0.009f; } // 100 → 0.1 (완전 소실 방지)
+
+    // ── 드래그 종료 존 (상/하단 ✕) ─────────────────────────────
+    private void showExitZones() {
+        if (zoneTop != null) return;
+        zoneTop = mkZone(); zoneBot = mkZone();
+        try {
+            wm.addView(zoneTop, zoneLp(Gravity.TOP));
+            wm.addView(zoneBot, zoneLp(Gravity.BOTTOM));
+        } catch (Exception ignored) { }
+    }
+    private TextView mkZone() {
+        TextView t = mkText("✕ 놓으면 앱 종료", 13, Theme.ON_PRIMARY, Typeface.BOLD);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(20), dp(10), dp(20), dp(10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Theme.DANGER);
+        bg.setCornerRadius(dp(20));
+        t.setBackground(bg);
+        t.setAlpha(0.5f);
+        return t;
+    }
+    private WindowManager.LayoutParams zoneLp(int vert) {
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                overlayType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = vert | Gravity.CENTER_HORIZONTAL;
+        lp.y = dp(12);
+        return lp;
+    }
+    private void highlightZones(int cy) {
+        int screenH = getResources().getDisplayMetrics().heightPixels;
+        boolean top = cy < dp(96), bot = cy > screenH - dp(96);
+        if (zoneTop != null) zoneTop.setAlpha(top ? 1f : 0.5f);
+        if (zoneBot != null) zoneBot.setAlpha(bot ? 1f : 0.5f);
+    }
+    private void hideExitZones() {
+        for (View z : new View[]{zoneTop, zoneBot}) {
+            if (z != null) { try { wm.removeView(z); } catch (Exception ignored) { } }
+        }
+        zoneTop = null; zoneBot = null;
     }
 
     private int overlayType() {
@@ -229,6 +293,7 @@ public class OverlayService extends Service {
             return false;
         });
         wm.addView(panel, panelLp);
+        panel.setAlpha(panelAlpha());
         panelOpen = true;
         updateRateInfo();
         recalc();
@@ -240,6 +305,7 @@ public class OverlayService extends Service {
         // restore last session
         String amt0 = getSharedPreferences(Rates.PREFS, 0).getString("amount", "");
         kOn = getSharedPreferences(Rates.PREFS, 0).getBoolean("kOn", false);
+        transp = getSharedPreferences(Rates.PREFS, 0).getInt("transp", 0);
         try { tax = Double.parseDouble(getSharedPreferences(Rates.PREFS, 0).getString("tax", "0")); }
         catch (Exception e) { tax = 0; }
         ScrollView sv = new ScrollView(this);
@@ -250,9 +316,29 @@ public class OverlayService extends Service {
         card.setBackground(pill(Theme.CANVAS, 0, Theme.R_CARD));
         sv.addView(card);
 
-        // header: title / dark toggle / close
+        // header: title / 투명도 게이지 / dark toggle / close
         LinearLayout head = row();
         head.addView(weight(mkText("우리 돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
+        android.widget.SeekBar opSeek = new android.widget.SeekBar(this);
+        opSeek.setMax(10); // 0~100, 10 단위
+        opSeek.setProgress(Math.round(transp / 10f));
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(dp(88), -2);
+        olp.rightMargin = dp(6);
+        opSeek.setLayoutParams(olp);
+        try {
+            opSeek.setProgressTintList(android.content.res.ColorStateList.valueOf(Theme.MUTED));
+            opSeek.setThumbTintList(android.content.res.ColorStateList.valueOf(Theme.PRIMARY));
+        } catch (Exception ignored) { }
+        opSeek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar s, int p, boolean fromUser) {
+                transp = p * 10;
+                if (panel != null) panel.setAlpha(panelAlpha());
+                getSharedPreferences(Rates.PREFS, 0).edit().putInt("transp", transp).apply();
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar s) { }
+            public void onStopTrackingTouch(android.widget.SeekBar s) { }
+        });
+        head.addView(opSeek);
         darkBtn = mkText(Theme.dark ? "☀️" : "🌙", 15, Theme.FOREGROUND, 0);
         darkBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
         darkBtn.setOnClickListener(v -> {
@@ -325,8 +411,7 @@ public class OverlayService extends Service {
         kBtn.setLayoutParams(klp);
         kBtn.setOnClickListener(v -> {
             kOn = !kOn;
-            kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
-            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
+            applyKStyle();
             recalc();
         });
         arow.addView(kBtn);
@@ -380,6 +465,23 @@ public class OverlayService extends Service {
         rrow.addView(compactBtn("↻ 지금 갱신", Theme.PRIMARY, v -> {
             Rates.refresh(this, refreshUi);
             toast("환율 갱신 중…");
+        }));
+        rrow.addView(neutralBtn("금액 초기화", v -> {
+            if (amountIn != null) amountIn.setText("");
+            toast("금액을 초기화했어요");
+        }));
+        rrow.addView(neutralBtn("전체 초기화", v -> {
+            if (taxIn != null) taxIn.setText("");
+            if (amountIn != null) amountIn.setText("");
+            tax = 0; kOn = false;
+            cur = "IDR";
+            Rates.setCur(this, cur);
+            rebuildCurRow();
+            rebuildTaxRow();
+            applyKStyle();
+            updateRateInfo();
+            recalc();
+            toast("통화·세율·K·금액을 모두 초기화했어요");
         }));
         rrow.addView(compactBtn("■ 앱 종료", Theme.DANGER, v -> {
             toast("우리 돈으로 얼마지? 종료");
@@ -517,6 +619,22 @@ public class OverlayService extends Service {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(76), dp(Theme.H_COMPACT));
         taxRow.addView(fixed(taxIn, dp(76), dp(Theme.H_COMPACT), 0));
         for (int preset = 0; preset <= 25; preset += 5) taxRow.addView(taxPill(preset));
+    }
+    private TextView neutralBtn(String s, View.OnClickListener l) {
+        TextView t = mkText(s, 12, Theme.FOREGROUND, 0);
+        t.setBackground(pill(0, Theme.HAIRLINE, Theme.R_CONTROL));
+        t.setPadding(dp(Theme.S_COMPACT), 0, dp(Theme.S_COMPACT), 0);
+        t.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(Theme.H_COMPACT));
+        lp.rightMargin = dp(8);
+        t.setLayoutParams(lp);
+        t.setOnClickListener(l);
+        return t;
+    }
+    private void applyKStyle() {
+        if (kBtn == null) return;
+        kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
+        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
     }
     private TextView compactBtn(String s, int bg, View.OnClickListener l) {
         TextView t = mkText(s, 12, Theme.ON_PRIMARY, Typeface.BOLD);
