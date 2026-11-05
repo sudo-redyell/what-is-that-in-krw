@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.7";
+    static final String VERSION = "v1.7.1";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -589,10 +589,18 @@ public class OverlayService extends Service {
         t.setLayoutParams(lp);
         t.setOnClickListener(v -> {
             if (pickIdx >= 0) { // 순서 변경 모드: 다른 칩 위치로 이동
-                if (pickIdx != idx) moveCur(pickIdx, idx);
-                else toast("순서 변경을 취소했어요");
+                String moved;
+                if (pickIdx != idx) moved = moveCur(pickIdx, idx);
+                else { pickIdx = -1; rebuildCurRow(); toast("순서 변경을 취소했어요"); return; }
                 pickIdx = -1;
+                if (moved != null) { // 이동한 통화를 바로 선택 — "바꾼 후 선택" 의도 반영
+                    cur = moved;
+                    Rates.setCur(this, cur);
+                }
                 rebuildCurRow();
+                updateRateInfo();
+                recalc();
+                if (moved != null) curRow.post(() -> revealByCode(cur));
                 return;
             }
             cur = c[0];
@@ -612,19 +620,28 @@ public class OverlayService extends Service {
         });
         return t;
     }
-    /** 코드로 현재 칩을 찾아 스크롤 — 순서 변경 후 인덱스 불일치 방지 */
-    private void revealByCode(String code) {
+    /** 코드로 현재 칩을 찾아 스크롤 — 재빌드 직후 레이아웃 미완료면 다음 프레임 재시도 */
+    private void revealByCode(String code) { revealByCode(code, 8); }
+    private void revealByCode(String code, int tries) {
         String[][] list = Rates.ordered(this);
+        View chip = null;
         for (int i = 0; i < list.length && i < curRow.getChildCount(); i++)
-            if (list[i][0].equals(code)) { reveal(curHsv, curRow.getChildAt(i)); return; }
+            if (list[i][0].equals(code)) { chip = curRow.getChildAt(i); break; }
+        if (chip == null || curHsv == null || curHsv.getWidth() == 0) return;
+        if (chip.getWidth() == 0) {
+            if (tries > 0) curRow.post(() -> revealByCode(code, tries - 1));
+            return;
+        }
+        reveal(curHsv, chip);
     }
-    private void moveCur(int from, int to) {
+    private String moveCur(int from, int to) {
         java.util.List<String[]> l = new java.util.ArrayList<>(java.util.Arrays.asList(Rates.ordered(this)));
-        if (from >= l.size()) return;
+        if (from >= l.size()) return null;
         String[] row = l.remove(from);
         l.add(Math.min(to, l.size()), row); // 옮긴 칩이 탭한 칩의 인덱스를 점유
         Rates.saveOrder(this, l.toArray(new String[0][]));
         toast("통화 순서를 바꾸었어요");
+        return row[0];
     }
     private void rebuildCurRow() {
         curRow.removeAllViews();
