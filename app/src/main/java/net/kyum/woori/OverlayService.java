@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.7.1";
+    static final String VERSION = "v1.7.2";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -589,18 +589,18 @@ public class OverlayService extends Service {
         t.setLayoutParams(lp);
         t.setOnClickListener(v -> {
             if (pickIdx >= 0) { // 순서 변경 모드: 다른 칩 위치로 이동
-                String moved;
-                if (pickIdx != idx) moved = moveCur(pickIdx, idx);
-                else { pickIdx = -1; rebuildCurRow(); toast("순서 변경을 취소했어요"); return; }
+                if (pickIdx == idx) { pickIdx = -1; rebuildCurRow(); toast("순서 변경을 취소했어요"); return; }
+                String[][] after = moveCur(pickIdx, idx);
+                if (after == null || after.length == 0) { pickIdx = -1; rebuildCurRow(); return; }
+                String movedCode = after[Math.min(idx, after.length - 1)][0]; // 이동 칩이 점유한 인덱스
                 pickIdx = -1;
-                if (moved != null) { // 이동한 통화를 바로 선택 — "바꾼 후 선택" 의도 반영
-                    cur = moved;
-                    Rates.setCur(this, cur);
-                }
-                rebuildCurRow();
+                toast("통화 순서를 바꾸었어요");
+                cur = movedCode; // 이동한 통화를 바로 선택 — 결과를 직접 써서 prefs 타이밍 무관
+                Rates.setCur(this, cur);
+                rebuildCurRow(after);
                 updateRateInfo();
                 recalc();
-                if (moved != null) curRow.post(() -> revealByCode(cur));
+                curRow.post(() -> revealByCode(cur));
                 return;
             }
             cur = c[0];
@@ -616,6 +616,11 @@ public class OverlayService extends Service {
                     ? "이동 모드 — 다른 칩을 누르면 그 자리로 옮겨요"
                     : "순서 변경을 마쳤어요");
             rebuildCurRow();
+            // 이동 모드 진입 시 행을 맨 앞에서 시작 — "화면 맨 앞 칩 == 인덱스 0"을 보장해
+            // 스크롤된 슬리버를 탭하는 인덱스 미스매치(USD 잔존 버그) 원천 차단
+            if (pickIdx >= 0) curRow.post(() -> {
+                if (curRow.getChildCount() > 0) reveal(curHsv, curRow.getChildAt(0));
+            });
             return true;
         });
         return t;
@@ -629,23 +634,23 @@ public class OverlayService extends Service {
             if (list[i][0].equals(code)) { chip = curRow.getChildAt(i); break; }
         if (chip == null || curHsv == null || curHsv.getWidth() == 0) return;
         if (chip.getWidth() == 0) {
-            if (tries > 0) curRow.post(() -> revealByCode(code, tries - 1));
+            if (tries > 0) ui.postDelayed(() -> revealByCode(code, tries - 1), 24);
             return;
         }
         reveal(curHsv, chip);
     }
-    private String moveCur(int from, int to) {
+    private String[][] moveCur(int from, int to) {
         java.util.List<String[]> l = new java.util.ArrayList<>(java.util.Arrays.asList(Rates.ordered(this)));
         if (from >= l.size()) return null;
         String[] row = l.remove(from);
-        l.add(Math.min(to, l.size()), row); // 옮긴 칩이 탭한 칩의 인덱스를 점유
-        Rates.saveOrder(this, l.toArray(new String[0][]));
-        toast("통화 순서를 바꾸었어요");
-        return row[0];
+        l.add(Math.min(to, l.size()), row);
+        String[][] after = l.toArray(new String[0][]);
+        Rates.saveOrder(this, after);
+        return after;
     }
-    private void rebuildCurRow() {
+    private void rebuildCurRow() { rebuildCurRow(Rates.ordered(this)); }
+    private void rebuildCurRow(String[][] list) {
         curRow.removeAllViews();
-        String[][] list = Rates.ordered(this);
         for (int i = 0; i < list.length; i++) curRow.addView(curPill(list[i], i));
     }
     private TextView taxPill(int pct) {
@@ -677,7 +682,8 @@ public class OverlayService extends Service {
             p = (p.getParent() instanceof View) ? (View) p.getParent() : null;
         }
         int max = Math.max(0, hsv.getChildAt(0).getWidth() - hsv.getWidth());
-        hsv.smoothScrollTo(Math.max(0, Math.min(max, (l + r) / 2 - hsv.getWidth() / 2)), 0);
+        hsv.smoothScrollBy(0, 0); // 진행 중 플링/애니 중단 — 잔류 scroller가 위치를 덮어쓰는 것 방지
+        hsv.scrollTo(Math.max(0, Math.min(max, (l + r) / 2 - hsv.getWidth() / 2)), 0);
     }
     private void rebuildTaxRow() {
         taxRow.removeAllViews();
