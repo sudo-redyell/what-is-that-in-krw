@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.6";
+    static final String VERSION = "v1.7";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -117,7 +117,7 @@ public class OverlayService extends Service {
                 Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
-        Notification n = b.setContentTitle("🇰🇷 우리 돈으로 얼마지?")
+        Notification n = b.setContentTitle("우리 돈으로 얼마지?")
                 .setContentText("플로팅 버튼 실행 중")
                 .setSmallIcon(android.R.drawable.ic_menu_sort_by_size)
                 .setContentIntent(pi).setOngoing(true).build();
@@ -264,7 +264,7 @@ public class OverlayService extends Service {
 
     // ── session persistence (마지막 세션 기억) ────────────────
     private void saveSession() {
-        String digits = amountIn == null ? "" : amountIn.getText().toString().replaceAll("[^0-9]", "");
+        String digits = amountIn == null ? "" : formatAmount(amountIn.getText().toString());
         getSharedPreferences(Rates.PREFS, 0).edit()
                 .putString("amount", digits)
                 .putString("tax", String.valueOf(tax))
@@ -387,26 +387,21 @@ public class OverlayService extends Service {
             public void onTextChanged(CharSequence s, int a, int b, int c) { }
             public void afterTextChanged(Editable e) {
                 if (self) return;
-                String digits = e.toString().replaceAll("[^0-9]", "");
-                if (digits.length() > 15) digits = digits.substring(0, 15);
-                String f = digits.isEmpty() ? "" : nf.format(Long.parseLong(digits));
+                String f = formatAmount(e.toString());
                 if (!f.equals(e.toString())) {
                     // watcher 제거 후 setText 방식 — afterTextChanged 내 e.replace는
                     // 삼성 키보드와의 경합으로 되돌려질 수 있다
                     removeOneself();
                     amountIn.setText(f);
                     addOneself();
-                    amountIn.setSelection(f.length());
                 }
-                try { amountIn.setSelection(f.length()); } catch (Exception ignored) { }
+                try { amountIn.setSelection(amountIn.getText().length()); } catch (Exception ignored) { }
                 recalc();
             }
             private void removeOneself() { amountIn.removeTextChangedListener(this); }
             private void addOneself() { amountIn.addTextChangedListener(this); }
         });
-        if (!amt0.isEmpty()) {
-            try { amountIn.setText(nf.format(Long.parseLong(amt0))); } catch (Exception ignored) { }
-        }
+        if (!amt0.isEmpty()) amountIn.setText(formatAmount(amt0));
         arow.addView(weight(amountIn, 1));
         kBtn = mkText("K", 15, kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND, Typeface.BOLD);
         kBtn.setGravity(Gravity.CENTER);
@@ -605,7 +600,7 @@ public class OverlayService extends Service {
             rebuildCurRow();
             updateRateInfo();
             recalc();
-            curRow.post(() -> reveal(curHsv, idx < curRow.getChildCount() ? curRow.getChildAt(idx) : null));
+            curRow.post(() -> revealByCode(cur));
         });
         t.setOnLongClickListener(v -> {
             pickIdx = (pickIdx == idx) ? -1 : idx;
@@ -617,11 +612,17 @@ public class OverlayService extends Service {
         });
         return t;
     }
+    /** 코드로 현재 칩을 찾아 스크롤 — 순서 변경 후 인덱스 불일치 방지 */
+    private void revealByCode(String code) {
+        String[][] list = Rates.ordered(this);
+        for (int i = 0; i < list.length && i < curRow.getChildCount(); i++)
+            if (list[i][0].equals(code)) { reveal(curHsv, curRow.getChildAt(i)); return; }
+    }
     private void moveCur(int from, int to) {
         java.util.List<String[]> l = new java.util.ArrayList<>(java.util.Arrays.asList(Rates.ordered(this)));
         if (from >= l.size()) return;
         String[] row = l.remove(from);
-        l.add(to > from ? to - 1 : to, row);
+        l.add(Math.min(to, l.size()), row); // 옮긴 칩이 탭한 칩의 인덱스를 점유
         Rates.saveOrder(this, l.toArray(new String[0][]));
         toast("통화 순서를 바꾸었어요");
     }
@@ -756,12 +757,22 @@ public class OverlayService extends Service {
         return v == Math.floor(v) ? String.valueOf((long) v) : String.valueOf(v);
     }
 
-    /** "100.000"→100000 (3자리 grouping dots), "12.5"→12.5, "1,500"→1500 */
+    /** 금액 서식: 정수부 3자리 쉼표 + 소수부(최대 6자리) 유지 */
+    private String formatAmount(String raw) {
+        String s = raw.replaceAll("[^0-9.]", "");
+        int dot = s.indexOf('.');
+        String intp = dot < 0 ? s : s.substring(0, dot);
+        String frac = dot < 0 ? null : s.substring(dot + 1).replace(".", "");
+        if (frac != null && frac.length() > 6) frac = frac.substring(0, 6);
+        if (intp.length() > 15) intp = intp.substring(0, 15);
+        String out = intp.isEmpty() ? "" : nf.format(Long.parseLong(intp));
+        if (dot >= 0) out += "." + (frac == null ? "" : frac);
+        return out;
+    }
     static double parseNum(String s) {
         if (s == null) return 0;
         s = s.trim().replace(" ", "").replace(",", "");
-        if (s.isEmpty()) return 0;
-        if (s.matches("\\d{1,3}(\\.\\d{3})+")) s = s.replace(".", "");
+        if (s.isEmpty() || ".".equals(s)) return 0;
         try { return Double.parseDouble(s); } catch (Exception e) { return 0; }
     }
 
