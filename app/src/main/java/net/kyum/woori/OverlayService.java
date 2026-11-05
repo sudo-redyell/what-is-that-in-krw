@@ -38,7 +38,7 @@ import java.util.Locale;
 public class OverlayService extends Service {
 
     /** build.gradle의 versionName과 동기화 유지 */
-    static final String VERSION = "v1.5";
+    static final String VERSION = "v1.6";
 
     public static volatile OverlayService inst;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -60,6 +60,9 @@ public class OverlayService extends Service {
     private LinearLayout curRow, taxRow;
     private HorizontalScrollView curHsv, taxHsv;
     private int transp = 0; // 투명도 0~100 (10 단위)
+    private int pickIdx = -1; // 통화 순서 변경 모드: 이동 선택된 칩 인덱스
+    private TextView mBtn;
+    private boolean mOn = false;
     private View zoneTop, zoneBot;
     private String cur = "IDR";
     private double tax = 0;
@@ -114,7 +117,7 @@ public class OverlayService extends Service {
                 Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
-        Notification n = b.setContentTitle("우리 돈으로 얼마지?")
+        Notification n = b.setContentTitle("🇰🇷 우리 돈으로 얼마지?")
                 .setContentText("플로팅 버튼 실행 중")
                 .setSmallIcon(android.R.drawable.ic_menu_sort_by_size)
                 .setContentIntent(pi).setOngoing(true).build();
@@ -266,6 +269,7 @@ public class OverlayService extends Service {
                 .putString("amount", digits)
                 .putString("tax", String.valueOf(tax))
                 .putBoolean("kOn", kOn)
+                .putBoolean("mOn", mOn)
                 .apply();
     }
 
@@ -305,6 +309,7 @@ public class OverlayService extends Service {
         // restore last session
         String amt0 = getSharedPreferences(Rates.PREFS, 0).getString("amount", "");
         kOn = getSharedPreferences(Rates.PREFS, 0).getBoolean("kOn", false);
+        mOn = getSharedPreferences(Rates.PREFS, 0).getBoolean("mOn", false);
         transp = getSharedPreferences(Rates.PREFS, 0).getInt("transp", 0);
         try { tax = Double.parseDouble(getSharedPreferences(Rates.PREFS, 0).getString("tax", "0")); }
         catch (Exception e) { tax = 0; }
@@ -318,7 +323,7 @@ public class OverlayService extends Service {
 
         // header: title / 투명도 게이지 / dark toggle / close
         LinearLayout head = row();
-        head.addView(weight(mkText("우리 돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
+        head.addView(weight(mkText("🇰🇷 우리 돈으로 얼마지?", 17, Theme.FOREGROUND, Typeface.BOLD), 1));
         android.widget.SeekBar opSeek = new android.widget.SeekBar(this);
         opSeek.setMax(10); // 0~100, 10 단위
         opSeek.setProgress(Math.round(transp / 10f));
@@ -356,10 +361,11 @@ public class OverlayService extends Service {
         head.addView(close);
         card.addView(head);
 
-        // currency pills: flag + symbol
+        // currency pills: flag + name, 순서 길게누르기 변경 지원
         curRow = row();
         curRow.setPadding(0, dp(12), 0, dp(4));
-        for (int i = 0; i < Rates.CURRENCIES.length; i++) curRow.addView(curPill(Rates.CURRENCIES[i], i));
+        String[][] list = Rates.ordered(this);
+        for (int i = 0; i < list.length; i++) curRow.addView(curPill(list[i], i));
         curHsv = wrapH(curRow);
         card.addView(curHsv);
 
@@ -411,10 +417,25 @@ public class OverlayService extends Service {
         kBtn.setLayoutParams(klp);
         kBtn.setOnClickListener(v -> {
             kOn = !kOn;
+            if (kOn) mOn = false;
             applyKStyle();
             recalc();
         });
         arow.addView(kBtn);
+        mBtn = mkText("M", 15, Theme.FOREGROUND, Typeface.BOLD);
+        mBtn.setGravity(Gravity.CENTER);
+        mBtn.setPadding(dp(16), 0, dp(16), 0);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-2, dp(44));
+        mlp.leftMargin = dp(8);
+        mBtn.setLayoutParams(mlp);
+        mBtn.setOnClickListener(v -> {
+            mOn = !mOn;
+            if (mOn) kOn = false;
+            applyKStyle();
+            recalc();
+        });
+        arow.addView(mBtn);
+        applyKStyle(); // 복원된 kOn/mOn 상태 반영
         card.addView(arow);
 
         // tax row (single line): custom input first, then presets
@@ -473,7 +494,7 @@ public class OverlayService extends Service {
         rrow.addView(neutralBtn("전체 초기화", v -> {
             if (taxIn != null) taxIn.setText("");
             if (amountIn != null) amountIn.setText("");
-            tax = 0; kOn = false;
+            tax = 0; kOn = false; mOn = false;
             cur = "IDR";
             Rates.setCur(this, cur);
             rebuildCurRow();
@@ -562,14 +583,23 @@ public class OverlayService extends Service {
     }
     private TextView curPill(String[] c, final int idx) {
         boolean sel = c[0].equals(cur);
-        TextView t = mkText(c[2] + " " + c[4], 15,
+        boolean picked = pickIdx == idx;
+        TextView t = mkText((picked ? "⇄ " : "") + c[2] + " " + c[4], 15,
                 sel ? Theme.ON_PRIMARY : Theme.FOREGROUND, sel ? Typeface.BOLD : 0);
-        t.setBackground(pill(sel ? Theme.PRIMARY : 0, sel ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
+        t.setBackground(pill(sel ? Theme.PRIMARY : 0,
+                picked ? Theme.PRIMARY : (sel ? 0 : Theme.HAIRLINE), Theme.R_CONTROL));
         t.setPadding(dp(Theme.S_CONTROL), dp(8), dp(Theme.S_CONTROL), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.rightMargin = dp(8);
         t.setLayoutParams(lp);
         t.setOnClickListener(v -> {
+            if (pickIdx >= 0) { // 순서 변경 모드: 다른 칩 위치로 이동
+                if (pickIdx != idx) moveCur(pickIdx, idx);
+                else toast("순서 변경을 취소했어요");
+                pickIdx = -1;
+                rebuildCurRow();
+                return;
+            }
             cur = c[0];
             Rates.setCur(this, cur);
             rebuildCurRow();
@@ -577,11 +607,28 @@ public class OverlayService extends Service {
             recalc();
             curRow.post(() -> reveal(curHsv, idx < curRow.getChildCount() ? curRow.getChildAt(idx) : null));
         });
+        t.setOnLongClickListener(v -> {
+            pickIdx = (pickIdx == idx) ? -1 : idx;
+            toast(pickIdx >= 0
+                    ? "이동 모드 — 다른 칩을 누르면 그 자리로 옮겨요"
+                    : "순서 변경을 마쳤어요");
+            rebuildCurRow();
+            return true;
+        });
         return t;
+    }
+    private void moveCur(int from, int to) {
+        java.util.List<String[]> l = new java.util.ArrayList<>(java.util.Arrays.asList(Rates.ordered(this)));
+        if (from >= l.size()) return;
+        String[] row = l.remove(from);
+        l.add(to > from ? to - 1 : to, row);
+        Rates.saveOrder(this, l.toArray(new String[0][]));
+        toast("통화 순서를 바꾸었어요");
     }
     private void rebuildCurRow() {
         curRow.removeAllViews();
-        for (int i = 0; i < Rates.CURRENCIES.length; i++) curRow.addView(curPill(Rates.CURRENCIES[i], i));
+        String[][] list = Rates.ordered(this);
+        for (int i = 0; i < list.length; i++) curRow.addView(curPill(list[i], i));
     }
     private TextView taxPill(int pct) {
         boolean sel = Math.abs(tax - pct) < 0.0001;
@@ -632,9 +679,14 @@ public class OverlayService extends Service {
         return t;
     }
     private void applyKStyle() {
-        if (kBtn == null) return;
-        kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
-        kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
+        if (kBtn != null) {
+            kBtn.setTextColor(kOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
+            kBtn.setBackground(pill(kOn ? Theme.PRIMARY : Color0(), kOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
+        }
+        if (mBtn != null) {
+            mBtn.setTextColor(mOn ? Theme.ON_PRIMARY : Theme.FOREGROUND);
+            mBtn.setBackground(pill(mOn ? Theme.PRIMARY : Color0(), mOn ? 0 : Theme.HAIRLINE, Theme.R_CONTROL));
+        }
     }
     private TextView compactBtn(String s, int bg, View.OnClickListener l) {
         TextView t = mkText(s, 12, Theme.ON_PRIMARY, Typeface.BOLD);
@@ -669,6 +721,7 @@ public class OverlayService extends Service {
     private void recalc() {
         double amt = parseNum(amountIn != null ? amountIn.getText().toString() : "");
         if (kOn) amt *= 1000;
+        if (mOn) amt *= 1000000;
         double rate = Rates.rate(this, cur);
         long total = Math.round(amt * rate * (1 + tax / 100.0));
         lastTotal = amt > 0 ? total : -1;
@@ -679,7 +732,7 @@ public class OverlayService extends Service {
             String r = fmtRate(rate);
             StringBuilder cap = new StringBuilder();
             if (amt > 0) {
-                cap.append(nf.format(amt)).append(" ").append(sym).append(kOn ? " (K×1,000)" : "");
+                cap.append(nf.format(amt)).append(" ").append(sym).append(kOn ? " (K×1,000)" : mOn ? " (M×1,000,000)" : "");
                 cap.append(" × ").append(r);
                 if (tax > 0) cap.append("  ·  +").append(trim(tax)).append("%");
             } else {

@@ -20,13 +20,34 @@ public final class Rates {
     public static final String TAG = "Woori";
     public static final String PREFS = "woori";
 
-    // code, symbol, emoji flag, 오프라인 예비값(X→KRW), 한국어 명칭
+    // code, symbol, emoji flag, 오프라인 예비값(X→KRW), 한국어 명칭 (기본 순서: 달러 엔 위안 루피아 동)
     public static final String[][] CURRENCIES = {
-        {"IDR", "Rp", "🇮🇩", "0.0738", "루피아"},
         {"USD", "$",  "🇺🇸", "1470", "달러"},
         {"JPY", "¥",  "🇯🇵", "9.5", "엔"},
+        {"CNY", "¥",  "🇨🇳", "202", "위안화"},
+        {"IDR", "Rp", "🇮🇩", "0.0738", "루피아"},
         {"VND", "₫",  "🇻🇳", "0.0059", "동"},
     };
+
+    /** 저장된 순서(curOrder)로 정렬된 통화 목록. 없는 코드는 기본 순서대로 맨 뒤. */
+    public static String[][] ordered(Context c) {
+        String saved = p(c).getString("curOrder", "");
+        if (saved.isEmpty()) return CURRENCIES;
+        String[] codes = saved.split(",");
+        java.util.List<String[]> out = new java.util.ArrayList<>();
+        for (String code : codes)
+            for (String[] row : CURRENCIES)
+                if (row[0].equals(code) && !out.contains(row)) out.add(row);
+        for (String[] row : CURRENCIES)
+            if (!out.contains(row)) out.add(row);
+        return out.toArray(new String[0][]);
+    }
+
+    public static void saveOrder(Context c, String[][] rows) {
+        StringBuilder sb = new StringBuilder();
+        for (String[] r : rows) { if (sb.length() > 0) sb.append(','); sb.append(r[0]); }
+        p(c).edit().putString("curOrder", sb.toString()).apply();
+    }
 
     private static final String[] ENDPOINTS = {
         "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/krw.json",
